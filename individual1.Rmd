@@ -1,0 +1,143 @@
+---
+title: "Lab 5"
+author: "John King"
+date: "11/5/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Setup
+
+```{r, warning=FALSE}
+library(tidyverse)
+library(lubridate)
+library(maps)
+library(mapproj)
+usCodes <- readxl::read_xlsx('./FRPP_GLC_-_United_StatesSep292020.xlsx')
+usCodesClean <- usCodes
+usCodesClean["State Code"] <- as.numeric(usCodesClean$`State Code`)
+usCodesClean["County Code"] <- as.numeric(usCodesClean$`County Code`)
+usCodesClean <- usCodesClean %>% rename(countyCode = "County Code") %>%
+  rename(countyName = "County Name")
+accBase <- read.csv("https://raw.githubusercontent.com/xdaiISU/ds202materials/master/hwlabs/fars2017/accident.csv", stringsAsFactors = FALSE)
+personBase <- read.csv("https://raw.githubusercontent.com/xdaiISU/ds202materials/master/hwlabs/fars2017/person.csv", stringsAsFactors = FALSE)
+stateCodes <- read.csv('./stateCodes.csv')
+makeCodes <- read.csv('./makeCodes.csv')
+stateLines <- map_data('state')
+countyLines <- map_data("county")
+```
+
+## 1
+
+```{r, warning=FALSE}
+accBase %>% group_by(DAY_WEEK) %>% summarise(Accidents = n()) %>% ungroup()
+```
+
+Notice that the weekdays corresponding to codes 1, 6, and 7 have over 5000 total acccidents while 2-5 have less than 5000. Code 1 is Sunday, 6 is Friday, and 7 is Saturday, so it seems that there are more accidents on the weekends.
+
+## 2
+
+```{r, warning=FALSE}
+fatallyInjuredPeople <- personBase %>% filter(INJ_SEV == 4)
+```
+
+## 3
+
+```{r, warning=FALSE}
+mostDangerousVehicles <- fatallyInjuredPeople %>% group_by(STATE, MAKE) %>% summarise(MakeCount = n()) %>% drop_na() %>% group_by(STATE) %>% summarise(MakeCount = max(MakeCount)) %>% left_join(fatallyInjuredPeople %>% group_by(STATE, MAKE) %>% summarise(MakeCount = n())) %>% drop_na() %>%
+  left_join(makeCodes, by= c(MAKE = 'Codes'))
+head(mostDangerousVehicles)
+```
+Rows with missing values are dropped twice. The second time was to remove rows that were duplicates that resulted from the join. However, the first one was done as a result of some codes for vehicle makes being missing. Since the explanation of the MAKE column in the manual indicates that there is a separate code for a make of a vehicle without a code, these missing values seem to be from the make not being recorded for whatever reason. As such, it seems as if the make could be any make, so in the interest of answering the question, they were unfortunately removed.
+
+## 4
+
+```{r, warning=FALSE, fig.width= 15}
+toText <- mostDangerousVehicles %>% left_join(usCodesClean %>% select(`State Name`, `State Code`), by= c(STATE = "State Code")) %>% distinct()
+toText["State Name"] <- tolower(toText$`State Name`)
+toText <- toText %>% left_join(stateLines, by= c(`State Name` = 'region'))
+toText <- toText %>% group_by(`State Name`) %>% summarise(long = mean(long), lat = mean(lat), Make = Make) %>% distinct
+stateLines %>% ggplot(aes(x=long, y=lat)) + geom_path(aes(group = group)) + coord_map() +
+  geom_text(data = toText, aes(label=Make), color = 'black')
+```
+
+The "most dangerous" vehicles in this context are simply the vehicles in which the most fatalities occurred when the vehicle was involved in an accident. From the data, Ford and Chevrolet vehicles seem to be the "most dangerous" vehicles, which seems a bit odd as both these makers specialize in trucks. Most of these vehicles are meant to be durable, which often means they do not crumple as easily as other cars. Therefore, one of these vehicles might be dangerous to the driver in terms of whiplash, but a probable reason these vehicles are considered the "most dangerous" is because they might be more likely to fatally injure someone in the vehicle they collide with.
+
+## 5
+
+```{r, warning=FALSE}
+
+joinedTables <- inner_join(accBase, personBase)
+```
+
+Joining by "STATE", "ST_CASE", "VE_FORMS", "COUNTY", "DAY", "MONTH", "HOUR", "MINUTE", "RUR_URB", "FUNC_SYS", "HARM_EV", "MAN_COLL", and "SCH_BUS" seems to give a reasonable result.
+
+## 6
+
+```{r, warning=FALSE}
+dat <- joinedTables %>% group_by(DAY_WEEK, HOUR, SEX) %>% summarise(Count = n()) %>% filter(HOUR != 99)
+
+SEX <- c(1, 2, 8, 9)
+sex <- c("Male", "Female", "Not Reported", "Unknown")
+dat2 <- as.data.frame(SEX)
+dat2["sex"] <- sex
+DAY_WEEK <- c(1,2,3,4,5,6,7)
+days <- factor(c("Sunday","Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"), levels = c("Sunday","Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"))
+dat3 <- as.data.frame(DAY_WEEK)
+dat3["days"] <- days
+dat <- dat %>% inner_join(dat2)
+dat <- dat %>% inner_join(dat3)
+#Stacked bar plot with hours and a facet_wrap of days of week.
+dat %>% ggplot(aes(x=HOUR, y=Count, fill=sex)) + 
+  geom_bar(position = "stack", stat = "identity") + 
+  facet_wrap(~days) + 
+  labs(x="Hour of Day", y="Number of cases")
+```
+
+Hour 99 (unknown hour) was removed to produce a better visualization. This hour does not have a significant number of cases.
+
+## 7
+
+```{r, warning=FALSE}
+dat <- accBase %>% group_by(STATE, COUNTY) %>% summarise(fatalities = sum(FATALS))
+dat2 <- usCodesClean %>% select(countyCode, countyName, `State Code`) %>% distinct 
+dat2["countyName"] <- tolower(dat2$countyName)
+dat <- dat %>% left_join(dat2, by=c(COUNTY = "countyCode", STATE = "State Code")) %>%
+  inner_join(countyLines, by=c(countyName = "subregion"))
+
+dat %>% ggplot(aes(x=long, y=lat, fill=fatalities)) + geom_polygon(aes(group = group)) +
+  coord_map()
+```
+
+## 8
+
+```{r, warning=FALSE}
+accDates <- accBase %>% unite(Date, DAY, MONTH, sep = "/") %>% 
+  unite(Date, Date, YEAR, sep = "/")
+accDates["Date"] <- dmy(accDates$Date)
+accDates <- accDates %>% filter((Date < ymd("2017/03/23") | Date > ymd("2017/12/23") ) | (Date > ymd("2017/06/23") & Date < ymd("2017/09/23")))
+summer <- interval(ymd("2017/06/22"), ymd("2017/09/24"))
+accDates["SorW"] <- ifelse(accDates$Date %within% summer, "summer", "winter")
+
+accDates <- accDates %>% select(SorW, Date, STATE, FATALS) %>%
+  left_join(usCodesClean %>% select(`State Name`, `State Code`), by= c(STATE = "State Code")) %>% distinct()
+  
+accDates["State Name"] <- tolower(accDates$`State Name`)
+accDates <- accDates %>% group_by(SorW, `State Name`) %>% summarise(fatalities = sum(FATALS)) %>%
+   pivot_wider(names_from = SorW, values_from = fatalities)
+accDates["SorW"] <- ifelse(accDates$winter == accDates$summer, "Tie", ifelse(accDates$winter > accDates$summer, "winter", "summer"))
+
+accDates <- accDates %>% select(-summer, -winter)
+accDates <- accDates %>% left_join(stateLines, by= c(`State Name` = 'region'))
+accDates %>% ggplot(aes(x=long, y=lat, fill = SorW)) + 
+  geom_polygon(aes(group = group)) +
+  coord_map()
+  
+  
+```
+
+SorW means Summer or Winter. This chart shows which season has more fatalities by state during 2017. 
+As can be seen, summer is often the more dangerous season as far as fatalities are concerned. 
